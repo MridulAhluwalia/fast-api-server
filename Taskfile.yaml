@@ -1,0 +1,4 @@
+version: "3"
+
+tasks:
+  run: uv run uvicorn src.main:app --reload
