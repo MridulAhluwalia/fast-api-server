@@ -1,6 +1,7 @@
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.database import comment_table, database, post_table
 from src.models.post import (
@@ -10,6 +11,8 @@ from src.models.post import (
     UserPostIn,
     UserPostWithComments,
 )
+from src.models.user import User
+from src.security import get_current_user, auth2_scheme
 
 router = APIRouter()
 
@@ -24,9 +27,12 @@ async def _find_post(post_id: int) -> dict:
 
 
 @router.post("/post", response_model=UserPost, status_code=201)
-async def create_post(post: UserPostIn) -> dict:
+async def create_post(
+    post: UserPostIn,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict:
     logger.info("Create post: %s", post)
-    data = post.model_dump()
+    data = {**post.model_dump(), "user_id": current_user.id}
     query = post_table.insert().values(data)
     logger.debug(query)
     last_record_id = await database.execute(query)
@@ -43,13 +49,16 @@ async def get_all_posts() -> list[dict]:
 
 
 @router.post("/comment", response_model=Comment, status_code=201)
-async def create_comment(comment: CommentIn) -> dict:
+async def create_comment(
+    comment: CommentIn,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict:
     logger.info("Create comment")
     post = await _find_post(comment.post_id)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found.")
 
-    data = comment.model_dump()
+    data = {**comment.model_dump(), "user_id": current_user.id}
     query = comment_table.insert().values(data)
     logger.debug(query)
     last_record_id = await database.execute(query)
