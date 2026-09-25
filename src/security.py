@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -15,15 +15,21 @@ logger = logging.getLogger(__name__)
 auth2_scheme = OAuth2PasswordBearer(tokenUrl="user/token")
 pwd_context = PasswordHash.recommended()
 
-credentials_exception = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Could not validate credentials",
-    headers={"WWW-Authenticate": "Bearer"},
-)
+
+def create_credentials_exception(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def access_token_expire_minutes() -> int:
     return 30
+
+
+def confirm_token_expire_minutes() -> int:
+    return 1440
 
 
 def create_access_token(email: str):
@@ -31,13 +37,56 @@ def create_access_token(email: str):
     expire = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
         minutes=access_token_expire_minutes(),
     )
-    jwt_data = {"sub": email, "exp": expire}
+    jwt_data = {"sub": email, "exp": expire, "type": "access"}
     encoded_jwt = jwt.encode(
         jwt_data,
         key=config.SECRET_KEY,
         algorithm=config.ALGORITHM,
     )
     return encoded_jwt
+
+
+def create_confirmation_token(email: str):
+    logger.debug("Create confirmation token", extra={"email": email})
+    expire = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+        minutes=confirm_token_expire_minutes(),
+    )
+    jwt_data = {"sub": email, "exp": expire, "type": "confirmation"}
+    encoded_jwt = jwt.encode(
+        jwt_data,
+        key=config.SECRET_KEY,
+        algorithm=config.ALGORITHM,
+    )
+    return encoded_jwt
+
+
+def get_subject_for_token_type(
+    token: str,
+    type_: Literal["access", "confirmation"],
+) -> str:
+    try:
+        payload = jwt.decode(
+            token=token,
+            key=config.SECRET_KEY,
+            algorithms=[config.ALGORITHM],
+        )
+    except ExpiredSignatureError as e:
+        raise create_credentials_exception("Token has expired") from e
+
+    except JWTError as e:
+        raise create_credentials_exception("Invalid token") from e
+
+    email = payload.get("sub")
+    if not email:
+        raise create_credentials_exception("Token is missing 'sub' filed")
+
+    token_type = payload.get("type")
+    if token_type is None or token_type != type_:
+        raise create_credentials_exception(
+            "Token has increased type, expected '{type_}'",
+        )
+
+    return email
 
 
 def get_password_hash(password: str) -> str:
@@ -62,37 +111,21 @@ async def authenticate_user(email: str, password: str):
     logger.debug("Authenticate user", extra={"email": email})
     user = await get_user(email)
     if not user:
-        raise credentials_exception
+        raise create_credentials_exception("Invalid email or password")
 
     if not verify_password(password, user.password):
-        raise credentials_exception
+        raise create_credentials_exception("Invalid email or password")
+
+    if not user.confirmed:
+        raise create_credentials_exception("User has not confirmed email")
 
     return user
 
 
 async def get_current_user(token: Annotated[str, Depends(auth2_scheme)]):
-    try:
-        payload = jwt.decode(
-            token=token,
-            key=config.SECRET_KEY,
-            algorithms=[config.ALGORITHM],
-        )
-        email = payload.get("sub")
-        if not email:
-            raise credentials_exception
-
-    except ExpiredSignatureError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from e
-
-    except JWTError as e:
-        raise credentials_exception from e
-
+    email = get_subject_for_token_type(token, "access")
     user = await get_user(email=email)
     if not user:
-        raise credentials_exception
+        raise create_credentials_exception("Could not find user for this token")
 
     return user
