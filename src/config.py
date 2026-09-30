@@ -14,6 +14,8 @@ class GlobalConfig(BaseConfig):
     DB_FORCE_ROLL_BACK: bool = False
     SECRET_KEY: str | None = None
     ALGORITHM: str = "HS256"
+    MAILGUN_DOMAIN: str | None = None
+    MAILGUN_API_KEY: str | None = None
 
 
 class DevConfig(GlobalConfig):
